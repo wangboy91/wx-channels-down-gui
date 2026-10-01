@@ -1,3 +1,9 @@
 build/bin
 node_modules
 frontend/dist
+
+# go build ./... 会在仓库根生成的可执行文件
+/wx-channels-gui.exe
+
+# 依赖的开源项目：本地保留，不提交（各自带自己的 .git，可独立 git pull 更新）
+/opensource/

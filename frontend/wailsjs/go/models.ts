@@ -44,10 +44,13 @@ export namespace main {
 	}
 	export class Status {
 	    running: boolean;
+	    ready: boolean;
+	    webUrl: string;
 	    proxyPort: number;
 	    apiPort: number;
 	    uptime: string;
 	    downloadDir: string;
+	    lastError: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -56,10 +59,13 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
+	        this.ready = source["ready"];
+	        this.webUrl = source["webUrl"];
 	        this.proxyPort = source["proxyPort"];
 	        this.apiPort = source["apiPort"];
 	        this.uptime = source["uptime"];
 	        this.downloadDir = source["downloadDir"];
+	        this.lastError = source["lastError"];
 	    }
 	}
 

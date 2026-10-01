@@ -1,21 +1,34 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { StartService, StopService, GetStatus, GetSettings, SaveSettings, SelectDirectory } from '../wailsjs/go/main/App'
+import { ref, computed, onMounted } from 'vue'
+import { StartService, StopService, GetStatus, GetSettings, SaveSettings, SelectDirectory, CheckReady } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
-const status = ref({ running: false, proxyPort: 2023, apiPort: 2022, uptime: '', downloadDir: '' })
+const emptyStatus = {
+  running: false,
+  ready: false,
+  webUrl: '',
+  proxyPort: 2023,
+  apiPort: 2022,
+  uptime: '',
+  downloadDir: '',
+  lastError: ''
+}
+
+const status = ref({ ...emptyStatus })
 const settings = ref({ proxyPort: 2023, apiPort: 2022, downloadDir: '', upstreamProxy: '', maxRunning: 3, defaultHighest: false, downloadCover: false, playDoneAudio: true })
 const showSettings = ref(false)
 const loading = ref(false)
+const saving = ref(false)
 const msg = ref({ text: '', type: '' })
-const webUrl = ref('')
+// iframe 的 src 只在服务真正就绪后才赋值；key 用于「重新加载」
+const iframeKey = ref(0)
+
+// 服务就绪前不加载 iframe，否则 WebView 会停在“127.0.0.1 拒绝连接”的错误页且不再重试
+const frameSrc = computed(() => (status.value.ready && status.value.webUrl ? status.value.webUrl : ''))
 
 async function refresh() {
   try {
     status.value = await GetStatus()
-    if (status.value.running) {
-      webUrl.value = `http://127.0.0.1:${status.value.apiPort}`
-    }
   } catch (e) { console.error(e) }
 }
 
@@ -28,33 +41,45 @@ async function toggleService() {
   try {
     if (status.value.running) {
       await StopService()
-      webUrl.value = ''
       showMsg('服务已停止', 'success')
     } else {
       await StartService()
-      showMsg('服务启动中...', 'success')
-      // 等服务就绪后加载 Web UI
-      setTimeout(async () => {
-        await refresh()
-        if (status.value.running) {
-          webUrl.value = `http://127.0.0.1:${status.value.apiPort}`
-        }
-      }, 3000)
+      showMsg('服务启动中，请稍候…', 'success')
     }
-    await refresh()
   } catch (e) {
     showMsg('操作失败: ' + e, 'error')
   } finally {
+    await refresh()
     loading.value = false
   }
 }
 
+function reloadFrame() {
+  iframeKey.value++
+  refresh()
+}
+
+async function retryReady() {
+  try {
+    const ok = await CheckReady()
+    if (ok) reloadFrame()
+    else showMsg('仍在启动中，请稍候…', 'success')
+  } catch (e) { showMsg('探测失败: ' + e, 'error') }
+  await refresh()
+}
+
 async function saveSettings() {
+  saving.value = true
   try {
     await SaveSettings(settings.value)
+    // 回读一次，确认真的写进了配置文件
+    await loadSettings()
     showMsg('设置已保存', 'success')
-    showSettings.value = false
-  } catch (e) { showMsg('保存失败: ' + e, 'error') }
+  } catch (e) {
+    showMsg('保存失败: ' + e, 'error')
+  } finally {
+    saving.value = false
+  }
 }
 
 async function browseDir() {
@@ -64,9 +89,11 @@ async function browseDir() {
   } catch (e) { console.error(e) }
 }
 
+let msgTimer = null
 function showMsg(text, type) {
   msg.value = { text, type }
-  setTimeout(() => { msg.value = { text: '', type: '' } }, 3000)
+  if (msgTimer) clearTimeout(msgTimer)
+  msgTimer = setTimeout(() => { msg.value = { text: '', type: '' } }, 3000)
 }
 
 onMounted(() => {
@@ -83,8 +110,8 @@ onMounted(() => {
     <header class="toolbar">
       <div class="toolbar-left">
         <span class="app-name">视频号下载器</span>
-        <span :class="['status-tag', status.running ? 'on' : 'off']">
-          {{ status.running ? '运行中' : '已停止' }}
+        <span :class="['status-tag', status.ready ? 'on' : (status.running ? 'pending' : 'off')]">
+          {{ status.ready ? '运行中' : (status.running ? '启动中' : '已停止') }}
         </span>
         <span v-if="status.running && status.uptime" class="uptime">{{ status.uptime }}</span>
       </div>
@@ -121,27 +148,27 @@ onMounted(() => {
           <div class="field wide">
             <label>下载目录</label>
             <div class="dir-row">
-              <input type="text" v-model="settings.downloadDir" placeholder="默认下载目录" />
-              <button class="btn-sm" @click="browseDir">浏览</button>
+              <input type="text" v-model="settings.downloadDir" placeholder="默认下载目录" :disabled="status.running" />
+              <button class="btn-sm" @click="browseDir" :disabled="status.running">浏览</button>
             </div>
           </div>
           <div class="field">
             <label>最大同时下载</label>
-            <input type="number" v-model.number="settings.maxRunning" min="1" max="10" />
+            <input type="number" v-model.number="settings.maxRunning" min="1" max="10" :disabled="status.running" />
           </div>
           <div class="field checkbox">
-            <label><input type="checkbox" v-model="settings.defaultHighest" /> 默认最高画质</label>
+            <label><input type="checkbox" v-model="settings.defaultHighest" :disabled="status.running" /> 默认最高画质</label>
           </div>
           <div class="field checkbox">
-            <label><input type="checkbox" v-model="settings.downloadCover" /> 下载封面</label>
+            <label><input type="checkbox" v-model="settings.downloadCover" :disabled="status.running" /> 下载封面</label>
           </div>
           <div class="field checkbox">
-            <label><input type="checkbox" v-model="settings.playDoneAudio" /> 完成提示音</label>
+            <label><input type="checkbox" v-model="settings.playDoneAudio" :disabled="status.running" /> 完成提示音</label>
           </div>
         </div>
         <div class="settings-actions">
-          <button class="btn-save" @click="saveSettings" :disabled="status.running">
-            {{ status.running ? '请先停止服务' : '保存设置' }}
+          <button class="btn-save" @click="saveSettings" :disabled="status.running || saving">
+            {{ status.running ? '请先停止服务' : (saving ? '保存中…' : '保存设置') }}
           </button>
         </div>
       </div>
@@ -149,21 +176,33 @@ onMounted(() => {
 
     <!-- 主内容区：嵌入原工具 Web UI -->
     <main class="webview">
+      <!-- 未启动 -->
       <div v-if="!status.running" class="placeholder">
         <div class="placeholder-icon">📺</div>
         <div class="placeholder-title">微信视频号下载器</div>
         <div class="placeholder-hint">点击上方「启动」按钮开始服务</div>
       </div>
-      <iframe
-        v-else-if="webUrl"
-        :src="webUrl"
-        frameborder="0"
-        class="webframe"
-      ></iframe>
-      <div v-else class="placeholder">
+
+      <!-- 已启动但 Web UI 尚未就绪（原工具首次启动约需数秒） -->
+      <div v-else-if="!frameSrc" class="placeholder">
         <div class="placeholder-icon">⏳</div>
-        <div class="placeholder-title">服务启动中...</div>
-        <div class="placeholder-hint">请稍候</div>
+        <div class="placeholder-title">服务启动中…</div>
+        <div class="placeholder-hint">
+          首次启动需要几秒，请稍候{{ status.uptime ? '（已等待 ' + status.uptime + '）' : '' }}
+        </div>
+        <button class="btn-retry" @click="retryReady">手动重试</button>
+      </div>
+
+      <!-- 已就绪 -->
+      <div v-else class="frame-wrap">
+        <iframe
+          :key="iframeKey"
+          :src="frameSrc"
+          frameborder="0"
+          class="webframe"
+          allow="clipboard-read; clipboard-write; fullscreen"
+        ></iframe>
+        <button class="btn-reload" @click="reloadFrame" title="重新加载页面">↻ 重新加载</button>
       </div>
     </main>
   </div>
@@ -217,6 +256,7 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: -ap
 }
 
 .status-tag.on { background: rgba(34,197,94,0.15); color: #22c55e; }
+.status-tag.pending { background: rgba(234,179,8,0.15); color: #eab308; }
 .status-tag.off { background: rgba(113,113,122,0.15); color: #71717a; }
 
 .uptime {
@@ -295,7 +335,7 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: -ap
   outline: none;
 }
 .field input:focus { border-color: #6366f1; }
-.field input:disabled { opacity: 0.5; }
+.field input:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .field input[type="checkbox"] {
   width: 15px;
@@ -316,6 +356,7 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: -ap
   cursor: pointer;
 }
 .btn-sm:hover { background: #2a2a3a; }
+.btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .settings-actions { display: flex; justify-content: flex-end; }
 
@@ -335,13 +376,37 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: -ap
 .webview {
   flex: 1;
   overflow: hidden;
+  position: relative;
+}
+
+.frame-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
 }
 
 .webframe {
   width: 100%;
   height: 100%;
   border: none;
+  display: block;
 }
+
+.btn-reload {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e4e4e7;
+  background: rgba(34,34,48,0.9);
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.btn-reload:hover { opacity: 1; }
 
 .placeholder {
   display: flex;
@@ -367,6 +432,18 @@ html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: -ap
 .placeholder-hint {
   font-size: 13px;
 }
+
+.btn-retry {
+  margin-top: 16px;
+  padding: 5px 16px;
+  background: #222230;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  color: #e4e4e7;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-retry:hover { background: #2a2a3a; }
 
 /* 过渡动画 */
 .slide-enter-active, .slide-leave-active {

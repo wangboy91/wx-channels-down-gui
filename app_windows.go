@@ -53,10 +53,9 @@ func SetSystemProxy(state ProxyState) error {
 	if err := key.SetDWordValue("ProxyEnable", enabled); err != nil {
 		return fmt.Errorf("设置 ProxyEnable 失败: %w", err)
 	}
-	if state.Server != "" {
-		if err := key.SetStringValue("ProxyServer", state.Server); err != nil {
-			return fmt.Errorf("设置 ProxyServer 失败: %w", err)
-		}
+	// 即使 server 为空也要写回，否则停止服务后系统代理会残留成指向已退出的本地端口
+	if err := key.SetStringValue("ProxyServer", state.Server); err != nil {
+		return fmt.Errorf("设置 ProxyServer 失败: %w", err)
 	}
 	NotifyProxyChange()
 	return nil
